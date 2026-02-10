@@ -1,6 +1,7 @@
 import axios from "axios";
 import fetch from "node-fetch";
 import * as turf from "@turf/turf";
+import "dotenv/config"
 
 import { callTrajetSoap } from "../services/soapService.js";
 import { findChargingStations } from "../services/chargingService.js";
@@ -129,7 +130,7 @@ export async function mapController(req, res) {
             origin: `${start.lat},${start.lng}`,
             destination: `${end.lat},${end.lng}`,
             mode: "driving",
-            key: "68431f21993f6faaf56b283a7bf764a0"
+            key: process.env.KEY_OPEN_STREET
           },
           timeout: 10000
         }

@@ -1,5 +1,7 @@
+import "dotenv/config"
+
 export async function callTrajetSoap({ distanceKm, vitesseMoyKmH, autonomieKm, tempsRechargeH }) {
-  const WSDL_URL = "http://localhost:8000/trajet?wsdl";
+  const WSDL_URL = process.env.SOAP_URL | "http://localhost:8000/trajet?wsdl";
 
   try {
       const client = await soap.createClientAsync(WSDL_URL);
