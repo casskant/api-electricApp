@@ -7,7 +7,7 @@ import { callTrajetSoap } from "../services/soapService.js";
 import { findChargingStations } from "../services/chargingService.js";
 
 /* =========================
-   UTILITY: POLYLINE DECODER
+   POLYLINE DECODER
 ========================= */
 function decodePolyline(encoded, precision = 5) {
   if (!encoded) return [];
@@ -45,7 +45,7 @@ function decodePolyline(encoded, precision = 5) {
 }
 
 /* =========================
-   UTILITY: GEOCODING
+   GEOCODAGE
 ========================= */
 async function geocodeCity(city) {
   const params = new URLSearchParams({
@@ -70,15 +70,14 @@ async function geocodeCity(city) {
 }
 
 /* =========================
-   UTILITY: ERROR HANDLER
+   ERREUR HANDLER
 ========================= */
 function handleError(res, error, context = "") {
-  console.error(`ERREUR [${context}] :`, error);
+  console.error(`ERREUR [${context}] :`, error.message || error);
   return res.status(500).json({
     success: false,
     context,
-    message: error.message || String(error),
-    stack: error.stack || null
+    message: error.message || String(error)
   });
 }
 
@@ -95,11 +94,10 @@ export async function mapController(req, res) {
       tempsRechargeH = 0.5
     } = req.body;
 
-    console.log("mapController: nouvelle requête", { startCity, endCity, vitesseMoyKmH, autonomieKm, tempsRechargeH });
+    console.log("NOUVELLE REQUÊTE MAP", { startCity, endCity, vitesseMoyKmH, autonomieKm, tempsRechargeH });
 
-    // Validation des villes
+    // Validation simple
     if (!startCity || !endCity) {
-      console.warn("mapController: villes manquantes");
       return res.status(400).json({
         success: false,
         context: "validation",
@@ -107,13 +105,11 @@ export async function mapController(req, res) {
       });
     }
 
-    // Validation des paramètres numériques
     const vitesse = Number(vitesseMoyKmH);
     const autonomie = Number(autonomieKm);
     const recharge = Number(tempsRechargeH);
 
     if (![vitesse, autonomie, recharge].every(Number.isFinite)) {
-      console.warn("mapController: paramètres invalides", { vitesse, autonomie, recharge });
       return res.status(400).json({
         success: false,
         context: "validation",
@@ -128,7 +124,7 @@ export async function mapController(req, res) {
         geocodeCity(startCity.trim()),
         geocodeCity(endCity.trim())
       ]);
-      console.log("mapController: géocodage réussi", { start, end });
+      console.log("Géocodage réussi", { start, end });
     } catch (err) {
       return handleError(res, err, "geocodeCity");
     }
@@ -153,13 +149,13 @@ export async function mapController(req, res) {
       routeLine = turf.lineString(routeCoords.map(([lat, lng]) => [lng, lat]));
       distanceKm = turf.length(routeLine, { units: "kilometers" });
 
-      console.log("mapController: route calculée", { distanceKm, nbPoints: routeCoords.length });
+      console.log("Route calculée", { distanceKm, nbPoints: routeCoords.length });
     } catch (err) {
       return handleError(res, err, "routeCalculation");
     }
 
-    /* ========= 3. TEMPS TRAJET (APPEL SOAP) ========= */
-    let travelTimeHours = null;
+    /* ========= 3. TEMPS TRAJET (SOAP) ========= */
+    let travelTimeHours;
     try {
       travelTimeHours = await callTrajetSoap({
         distanceKm,
@@ -167,11 +163,11 @@ export async function mapController(req, res) {
         autonomieKm: autonomie,
         tempsRechargeH: recharge
       });
-      console.log("mapController: SOAP calculé", { travelTimeHours });
+      console.log("Temps trajet SOAP calculé", { travelTimeHours });
     } catch (err) {
-      console.warn("mapController: SOAP échoué, fallback utilisé", err.message);
+      console.warn("SOAP échoué, fallback utilisé", err.message);
       travelTimeHours = distanceKm / vitesse + Math.ceil(distanceKm / autonomie) * recharge;
-      console.log("mapController: fallback travelTimeHours", { travelTimeHours });
+      console.log("Fallback travelTimeHours", { travelTimeHours });
     }
 
     /* ========= 4. BORNES ÉLECTRIQUES ========= */
@@ -182,9 +178,9 @@ export async function mapController(req, res) {
         distanceKm,
         autonomieKm: autonomie
       });
-      console.log("mapController: bornes trouvées", { nbBornes: bornes.length });
+      console.log("Bornes trouvées", { nbBornes: bornes.length });
     } catch (err) {
-      console.warn("mapController: findChargingStations a échoué", err.message);
+      console.warn("findChargingStations échoué", err.message);
       bornes = [];
     }
 
@@ -206,7 +202,7 @@ export async function mapController(req, res) {
       }
     };
 
-    console.log("mapController: réponse prête", response.summary);
+    console.log("Réponse prête", response.summary);
     res.json(response);
 
   } catch (err) {
