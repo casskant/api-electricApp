@@ -1,15 +1,16 @@
 import axios from "axios";
 import fetch from "node-fetch";
 import * as turf from "@turf/turf";
-import "dotenv/config";
+import "dotenv/config"
 
 import { callTrajetSoap } from "../services/soapService.js";
 import { findChargingStations } from "../services/chargingService.js";
 
 /* =========================
-   POLYLINE DECODER
+   UTILITY: POLYLINE DECODER
 ========================= */
-function decodePolyline(encoded, precision = 5) {
+
+function decodePolyline(encoded, precision = 6) {
   if (!encoded) return [];
 
   let index = 0, lat = 0, lng = 0;
@@ -45,8 +46,9 @@ function decodePolyline(encoded, precision = 5) {
 }
 
 /* =========================
-   GEOCODAGE
+   UTILITY: GEOCODING
 ========================= */
+
 async function geocodeCity(city) {
   const params = new URLSearchParams({
     q: `${city} France`,
@@ -70,20 +72,23 @@ async function geocodeCity(city) {
 }
 
 /* =========================
-   ERREUR HANDLER
+   UTILITY: ERROR HANDLER
 ========================= */
+
 function handleError(res, error, context = "") {
-  console.error(`ERREUR [${context}] :`, error.message || error);
-  return res.status(500).json({
+  console.error(`ERREUR [${context}] :`, error);
+  res.status(500).json({
     success: false,
     context,
-    message: error.message || String(error)
+    message: error.message || String(error),
+    stack: error.stack || null
   });
 }
 
 /* =========================
    MAP CONTROLLER
 ========================= */
+
 export async function mapController(req, res) {
   try {
     const {
@@ -94,9 +99,6 @@ export async function mapController(req, res) {
       tempsRechargeH = 0.5
     } = req.body;
 
-    console.log("NOUVELLE REQUÊTE MAP", { startCity, endCity, vitesseMoyKmH, autonomieKm, tempsRechargeH });
-
-    // Validation simple
     if (!startCity || !endCity) {
       return res.status(400).json({
         success: false,
@@ -105,32 +107,21 @@ export async function mapController(req, res) {
       });
     }
 
-    const vitesse = Number(vitesseMoyKmH);
-    const autonomie = Number(autonomieKm);
-    const recharge = Number(tempsRechargeH);
-
-    if (![vitesse, autonomie, recharge].every(Number.isFinite)) {
-      return res.status(400).json({
-        success: false,
-        context: "validation",
-        message: "Paramètres invalides pour le calcul du trajet"
-      });
-    }
-
     /* ========= 1. GEOCODAGE ========= */
+
     let start, end;
     try {
       [start, end] = await Promise.all([
         geocodeCity(startCity.trim()),
         geocodeCity(endCity.trim())
       ]);
-      console.log("Géocodage réussi", { start, end });
     } catch (err) {
       return handleError(res, err, "geocodeCity");
     }
 
     /* ========= 2. ROUTE ========= */
-    let routeCoords = [], routeLine, distanceKm = 0;
+
+    let routeCoords, routeLine, distanceKm;
     try {
       const routeRes = await axios.get(
         "https://maps.open-street.com/api/route/",
@@ -141,69 +132,65 @@ export async function mapController(req, res) {
             mode: "driving",
             key: process.env.KEY_OPEN_STREET
           },
-          timeout: 15000
+          timeout: 10000
         }
       );
 
       routeCoords = decodePolyline(routeRes.data.polyline);
-      routeLine = turf.lineString(routeCoords.map(([lat, lng]) => [lng, lat]));
+      routeLine = turf.lineString(
+        routeCoords.map(([lat, lng]) => [lng, lat])
+      );
       distanceKm = turf.length(routeLine, { units: "kilometers" });
-
-      console.log("Route calculée", { distanceKm, nbPoints: routeCoords.length });
     } catch (err) {
       return handleError(res, err, "routeCalculation");
     }
 
-    /* ========= 3. TEMPS TRAJET (SOAP) ========= */
+    /* ========= 3. TEMPS TRAJET (APPEL SOAP) ========= */
+
     let travelTimeHours;
     try {
       travelTimeHours = await callTrajetSoap({
         distanceKm,
-        vitesseMoyKmH: vitesse,
-        autonomieKm: autonomie,
-        tempsRechargeH: recharge
+        vitesseMoyKmH: Number(vitesseMoyKmH),
+        autonomieKm: Number(autonomieKm),
+        tempsRechargeH: Number(tempsRechargeH)
       });
-      console.log("Temps trajet SOAP calculé", { travelTimeHours });
     } catch (err) {
-      console.warn("SOAP échoué, fallback utilisé", err.message);
-      travelTimeHours = distanceKm / vitesse + Math.ceil(distanceKm / autonomie) * recharge;
-      console.log("Fallback travelTimeHours", { travelTimeHours });
+      return handleError(res, err, "callTrajetSoap");
     }
 
     /* ========= 4. BORNES ÉLECTRIQUES ========= */
+
     let bornes = [];
     try {
       bornes = await findChargingStations({
         routeLine,
         distanceKm,
-        autonomieKm: autonomie
+        autonomieKm: Number(autonomieKm)
       });
-      console.log("Bornes trouvées", { nbBornes: bornes.length });
     } catch (err) {
-      console.warn("findChargingStations échoué", err.message);
-      bornes = [];
+      console.warn("findChargingStations a échoué :", err.message);
+      bornes = []; 
     }
 
-    /* ========= 5. REPONSE JSON ========= */
-    const response = {
+    /* ========= REPONSE FORMAT JSON ========= */
+
+    res.json({
       success: true,
       startCity: startCity.trim(),
       endCity: endCity.trim(),
       start,
       end,
       distanceKm: Math.round(distanceKm),
-      travelTimeHours: travelTimeHours ? Number(travelTimeHours.toFixed(1)) : null,
+      travelTimeHours,
       routeCoords,
       bornes,
       summary: {
         distanceKm: Math.round(distanceKm),
-        tempsHeures: travelTimeHours ? Number(travelTimeHours.toFixed(1)) : null,
+        tempsHeures: Number(travelTimeHours.toFixed(1)),
         nbRecharges: bornes.length
       }
-    };
-
-    console.log("Réponse prête", response.summary);
-    res.json(response);
+    });
 
   } catch (err) {
     return handleError(res, err, "mapController");
