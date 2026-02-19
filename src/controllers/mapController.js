@@ -50,6 +50,8 @@ function decodePolyline(encoded, precision = 6) {
 ========================= */
 
 async function geocodeCity(city) {
+  console.log(`[geocodeCity] Recherche de la ville : ${city}`);
+  
   const params = new URLSearchParams({
     q: `${city} France`,
     format: "json",
@@ -65,10 +67,13 @@ async function geocodeCity(city) {
   const data = await res.json();
   if (!data?.[0]) throw new Error(`Ville introuvable : ${city}`);
 
-  return {
+  const location = {
     lat: Number(data[0].lat),
     lng: Number(data[0].lon)
   };
+
+  console.log(`[geocodeCity] Coordonnées trouvées pour ${city}:`, location);
+  return location;
 }
 
 /* =========================
@@ -99,7 +104,10 @@ export async function mapController(req, res) {
       tempsRechargeH = 0.5
     } = req.body;
 
+    console.log("[mapController] Requête reçue :", req.body);
+
     if (!startCity || !endCity) {
+      console.warn("[mapController] Villes manquantes dans la requête");
       return res.status(400).json({
         success: false,
         context: "validation",
@@ -108,6 +116,7 @@ export async function mapController(req, res) {
     }
 
     /* ========= 1. GEOCODAGE ========= */
+    console.log("[mapController] Début du géocodage...");
 
     let start, end;
     try {
@@ -120,6 +129,7 @@ export async function mapController(req, res) {
     }
 
     /* ========= 2. ROUTE ========= */
+    console.log("[mapController] Calcul de la route entre villes...");
 
     let routeCoords, routeLine, distanceKm;
     try {
@@ -136,16 +146,22 @@ export async function mapController(req, res) {
         }
       );
 
+      console.log("[mapController] Polyline reçue :", routeRes.data.polyline);
+
       routeCoords = decodePolyline(routeRes.data.polyline);
       routeLine = turf.lineString(
         routeCoords.map(([lat, lng]) => [lng, lat])
       );
       distanceKm = turf.length(routeLine, { units: "kilometers" });
+
+      console.log(`[mapController] Distance calculée : ${distanceKm.toFixed(2)} km`);
+
     } catch (err) {
       return handleError(res, err, "routeCalculation");
     }
 
     /* ========= 3. TEMPS TRAJET (APPEL SOAP) ========= */
+    console.log("[mapController] Appel du service SOAP pour le temps de trajet...");
 
     let travelTimeHours;
     try {
@@ -155,11 +171,14 @@ export async function mapController(req, res) {
         autonomieKm: Number(autonomieKm),
         tempsRechargeH: Number(tempsRechargeH)
       });
+
+      console.log(`[mapController] Temps de trajet estimé : ${travelTimeHours.toFixed(2)} h`);
     } catch (err) {
       return handleError(res, err, "callTrajetSoap");
     }
 
     /* ========= 4. BORNES ÉLECTRIQUES ========= */
+    console.log("[mapController] Recherche des bornes de recharge sur le trajet...");
 
     let bornes = [];
     try {
@@ -168,12 +187,15 @@ export async function mapController(req, res) {
         distanceKm,
         autonomieKm: Number(autonomieKm)
       });
+
+      console.log(`[mapController] Bornes trouvées : ${bornes.length}`);
     } catch (err) {
       console.warn("findChargingStations a échoué :", err.message);
       bornes = []; 
     }
 
     /* ========= REPONSE FORMAT JSON ========= */
+    console.log("[mapController] Préparation de la réponse JSON...");
 
     res.json({
       success: true,
@@ -192,6 +214,7 @@ export async function mapController(req, res) {
       }
     });
 
+    console.log("[mapController] Réponse envoyée avec succès !");
   } catch (err) {
     return handleError(res, err, "mapController");
   }
