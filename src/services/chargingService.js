@@ -17,7 +17,7 @@ export async function findChargingStations({
   routeLine,
   distanceKm,
   autonomieKm,
-  bufferKm = 20
+  bufferKm = 50
 }) {
   console.log("📍 Étape 1 : Création du buffer autour de la route");
 
