@@ -75,4 +75,9 @@ export async function findChargingStations({
   for (const b of withPosition) {
     if (b.distanceAlongRouteKm - lastStopKm >= autonomieKm * 0.8 && selected.length < rechargesNeeded) {
       selected.push({ ...b, rechargeNum: selected.length + 1 });
-      lastS
+      lastStopKm = b.distanceAlongRouteKm;
+    }
+  }
+
+  return selected;
+}
