@@ -54,23 +54,24 @@ export async function findChargingStations({ routeLine, distanceKm, autonomieKm,
     .sort((a, b) => a.distanceAlongRouteKm - b.distanceAlongRouteKm);
 
   // 4️⃣ Calcul du nombre d'arrêts nécessaires et sélection
- const nbStops = Math.max(0, Math.ceil(distanceKm / autonomieKm) - 1);
-  const selected = [];
-  let lastStopKm = 0;
-  
-  for (const b of withPosition) {
-    if (selected.length === 0) {
-      // Premier arrêt : on prend la première borne sur la route
-      selected.push({ ...b, rechargeNum: 1 });
-      lastStopKm = b.distanceAlongRouteKm;
-    } else if (b.distanceAlongRouteKm - lastStopKm >= autonomieKm * 0.8 && selected.length < nbStops) {
-      selected.push({ ...b, rechargeNum: selected.length + 1 });
-      lastStopKm = b.distanceAlongRouteKm;
+    const nbStops = Math.max(0, Math.ceil(distanceKm / autonomieKm) - 1);
+    const selected = [];
+    let lastStopKm = 0;
+    
+    for (const b of withPosition) {
+      if (selected.length === 0) {
+        // Premier arrêt : on prend la première borne disponible
+        selected.push({ ...b, rechargeNum: 1 });
+        lastStopKm = b.distanceAlongRouteKm;
+      } else if (b.distanceAlongRouteKm - lastStopKm >= autonomieKm * 0.8 && selected.length < nbStops) {
+        selected.push({ ...b, rechargeNum: selected.length + 1 });
+        lastStopKm = b.distanceAlongRouteKm;
+      }
+    
+      // Stop si on a déjà sélectionné toutes les bornes nécessaires
+      if (selected.length >= nbStops) break;
     }
-  
-    // Stop si on a déjà assez de bornes
-    if (selected.length >= nbStops) break;
-  }
+
 
   console.log(`⚡ Nombre d'arrêts nécessaires : ${nbStops}`);
   console.log(`🔹 Bornes sélectionnées :`);
