@@ -14,22 +14,18 @@ const IRVE_URL = "https://odre.opendatasoft.com/api/records/1.0/search/";
 export async function findChargingStations({ routeLine, distanceKm, autonomieKm, bufferKm = 20 }) {
   console.log("🚗 Recherche des bornes sur le trajet");
 
-  // 1️⃣ Créer un buffer autour de la route pour trouver les bornes proches
+  // 1️⃣ Créer un buffer autour de la route
   const buffer = turf.buffer(routeLine, bufferKm, { units: "kilometers" });
 
   // Simplifier le polygone pour WKT
   const ring = buffer.geometry.coordinates[0];
-  if (ring.length < 3) {
-    console.warn("⚠️ Polygone de buffer invalide, aucune borne trouvée");
-    return { nbStops: 0, stations: [] };
-  }
+  if (ring.length < 3) return { nbStops: 0, stations: [] };
+
   const simplified = ring.slice(0, 50);
   simplified.push(simplified[0]);
-
-  // WKT format (lng lat)
   const polygonWKT = `POLYGON((${simplified.map(([lng, lat]) => `${lng} ${lat}`).join(",")}))`;
 
-  // 2️⃣ Requête vers l'API IRVE
+  // 2️⃣ Requête API IRVE
   const res = await fetch(
     `${IRVE_URL}?dataset=bornes-irve&geofilter=${encodeURIComponent(polygonWKT)}&rows=500`
   );
@@ -37,48 +33,32 @@ export async function findChargingStations({ routeLine, distanceKm, autonomieKm,
 
   console.log(`🔹 ${data.records.length} bornes récupérées depuis l'API`);
 
-  // 3️⃣ Normaliser les bornes et calculer distance à la ligne
-  const candidates = (data.records || [])
+  // 3️⃣ Projeter toutes les bornes sur la route, sans filtrage
+  const withPosition = (data.records || [])
     .map((r, i) => {
       const p = r.fields?.geo_point_borne;
       if (!p) return null;
       const [lat, lng] = p;
       const point = turf.point([lng, lat]);
-      const distanceToRouteKm = turf.pointToLineDistance(point, routeLine, { units: "kilometers" });
-
+      const nearest = turf.nearestPointOnLine(routeLine, point, { units: "kilometers" });
       return {
         id: r.recordid || `borne-${i}`,
         lat,
         lng,
         enseigne: r.fields.n_enseigne || r.fields.n_amenageur || "Public",
-        puissance: parseFloat(r.fields.puiss_max) || 3,
-        distanceToRouteKm,
-        point
+        puissance: parseFloat(r.fields.puiss_max) || 0,
+        distanceAlongRouteKm: nearest.properties.location
       };
     })
-    .filter(b => b !== null);
+    .filter(b => b !== null)
+    .sort((a, b) => a.distanceAlongRouteKm - b.distanceAlongRouteKm);
 
-  console.log(`🔹 ${candidates.length} bornes après normalisation`);
-
-  // 4️⃣ Projection sur la ligne pour connaître la position le long du trajet
-  const withPosition = candidates.map(b => {
-    const nearest = turf.nearestPointOnLine(routeLine, b.point, { units: "kilometers" });
-    return {
-      ...b,
-      distanceAlongRouteKm: nearest.properties.location
-    };
-  });
-
-  // 5️⃣ Tri par distance le long du trajet
-  withPosition.sort((a, b) => a.distanceAlongRouteKm - b.distanceAlongRouteKm);
-
-  // 6️⃣ Calcul du nombre d'arrêts nécessaires et sélection
+  // 4️⃣ Calcul du nombre d'arrêts nécessaires et sélection
   const nbStops = Math.max(0, Math.ceil(distanceKm / autonomieKm) - 1);
   const selected = [];
   let lastStopKm = 0;
 
   for (const b of withPosition) {
-    // Ajouter borne si on a parcouru au moins 80% de l'autonomie depuis le dernier arrêt
     if (b.distanceAlongRouteKm - lastStopKm >= autonomieKm * 0.8 && selected.length < nbStops) {
       selected.push({ ...b, rechargeNum: selected.length + 1 });
       lastStopKm = b.distanceAlongRouteKm;
@@ -88,9 +68,7 @@ export async function findChargingStations({ routeLine, distanceKm, autonomieKm,
   console.log(`⚡ Nombre d'arrêts nécessaires : ${nbStops}`);
   console.log(`🔹 Bornes sélectionnées :`);
   selected.forEach(b =>
-    console.log(
-      `#${b.rechargeNum} - ${b.enseigne} (${b.puissance}kW) à ${b.distanceAlongRouteKm.toFixed(1)} km`
-    )
+    console.log(`#${b.rechargeNum} - ${b.enseigne} (${b.puissance}kW) à ${b.distanceAlongRouteKm.toFixed(1)} km`)
   );
 
   return { nbStops, stations: selected };
