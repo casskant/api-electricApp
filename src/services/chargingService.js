@@ -1,6 +1,8 @@
 import fetch from "node-fetch";
 import * as turf from "@turf/turf";
 
+console.log("charging service")
+
 const IRVE_URL =
   "https://odre.opendatasoft.com/api/records/1.0/search/";
 
