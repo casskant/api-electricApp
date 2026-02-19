@@ -1,200 +1,76 @@
-import axios from "axios";
 import fetch from "node-fetch";
 import * as turf from "@turf/turf";
-import "dotenv/config"
 
-import { callTrajetSoap } from "../services/soapService.js";
-import { findChargingStations } from "../services/chargingService.js";
+export async function findChargingStations({
+  routeLine,
+  distanceKm,
+  autonomieKm,
+  bufferKm = 20
+}) {
+  // 1. Créer un buffer autour de la route
+  const buffer = turf.buffer(routeLine, bufferKm, { units: "kilometers" });
+  const ring = buffer.geometry.coordinates[0];
+  const simplified = ring.slice(0, 50);
+  simplified.push(simplified[0]);
 
-/* =========================
-   UTILITY: POLYLINE DECODER
-========================= */
+  const polygonWKT = `POLYGON((${simplified
+    .map(([lng, lat]) => `${lng} ${lat}`)
+    .join(",")}))`;
 
-function decodePolyline(encoded, precision = 6) {
-  if (!encoded) return [];
-
-  let index = 0, lat = 0, lng = 0;
-  const coords = [];
-  const factor = 10 ** precision;
-
-  while (index < encoded.length) {
-    let result = 0, shift = 0, b;
-
-    do {
-      b = encoded.charCodeAt(index++) - 63;
-      result |= (b & 0x1f) << shift;
-      shift += 5;
-    } while (b >= 0x20);
-
-    lat += (result & 1) ? ~(result >> 1) : result >> 1;
-
-    result = 0;
-    shift = 0;
-
-    do {
-      b = encoded.charCodeAt(index++) - 63;
-      result |= (b & 0x1f) << shift;
-      shift += 5;
-    } while (b >= 0x20);
-
-    lng += (result & 1) ? ~(result >> 1) : result >> 1;
-
-    coords.push([lat / factor, lng / factor]);
-  }
-
-  return coords;
-}
-
-/* =========================
-   UTILITY: GEOCODING
-========================= */
-
-async function geocodeCity(city) {
-  const params = new URLSearchParams({
-    q: `${city} France`,
-    format: "json",
-    limit: 1,
-    countrycodes: "fr"
-  });
-
+  // 2. Requête API IRVE (dataset officiel des bornes françaises)
   const res = await fetch(
-    `https://nominatim.openstreetmap.org/search?${params}`,
-    { headers: { "User-Agent": "ElectricApp/1.0" } }
+    `https://odre.opendatasoft.com/api/records/1.0/search/?dataset=bornes-irve&geofilter=${encodeURIComponent(polygonWKT)}&rows=500`
   );
-
   const data = await res.json();
-  if (!data?.[0]) throw new Error(`Ville introuvable : ${city}`);
 
-  return {
-    lat: Number(data[0].lat),
-    lng: Number(data[0].lon)
-  };
-}
+  // 3. Normalisation + filtrage
+  const candidates = (data.records || [])
+    .map((r, i) => {
+      const p = r.fields?.geo_point_borne;
+      if (!p) return null;
+      const [lat, lng] = p;
 
-/* =========================
-   UTILITY: ERROR HANDLER
-========================= */
+      const distanceToRouteKm = turf.pointToLineDistance(
+        [lng, lat],
+        routeLine,
+        { units: "kilometers" }
+      );
 
-function handleError(res, error, context = "") {
-  console.error(`ERREUR [${context}] :`, error);
-  res.status(500).json({
-    success: false,
-    context,
-    message: error.message || String(error),
-    stack: error.stack || null
-  });
-}
+      return {
+        id: r.recordid || `borne-${i}`,
+        lat,
+        lng,
+        puissance: Number(r.fields.puiss_max) || 3,
+        enseigne: r.fields.n_enseigne || r.fields.n_amenageur || "Public",
+        distanceToRouteKm
+      };
+    })
+    .filter(b => b && b.distanceToRouteKm <= bufferKm && b.puissance >= 3);
 
-/* =========================
-   MAP CONTROLLER
-========================= */
-
-export async function mapController(req, res) {
-  try {
-    const {
-      startCity,
-      endCity,
-      vitesseMoyKmH = 110,
-      autonomieKm = 350,
-      tempsRechargeH = 0.5
-    } = req.body;
-
-    if (!startCity || !endCity) {
-      return res.status(400).json({
-        success: false,
-        context: "validation",
-        message: "Villes de départ et d’arrivée requises"
+  // 4. Projection sur la route pour connaître la position de chaque borne
+  const withPosition = candidates
+    .map(b => {
+      const nearest = turf.nearestPointOnLine(routeLine, [b.lng, b.lat], {
+        units: "kilometers"
       });
+      return { ...b, distanceAlongRouteKm: nearest.properties.location };
+    })
+    .sort((a, b) => a.distanceAlongRouteKm - b.distanceAlongRouteKm);
+
+  // 5. Sélection des arrêts nécessaires
+  const rechargesNeeded = Math.max(0, Math.ceil(distanceKm / autonomieKm) - 1);
+  const selected = [];
+  let lastStopKm = 0;
+
+  for (const b of withPosition) {
+    if (
+      b.distanceAlongRouteKm - lastStopKm >= autonomieKm * 0.8 &&
+      selected.length < rechargesNeeded
+    ) {
+      selected.push({ ...b, rechargeNum: selected.length + 1 });
+      lastStopKm = b.distanceAlongRouteKm;
     }
-
-    /* ========= 1. GEOCODAGE ========= */
-
-    let start, end;
-    try {
-      [start, end] = await Promise.all([
-        geocodeCity(startCity.trim()),
-        geocodeCity(endCity.trim())
-      ]);
-    } catch (err) {
-      return handleError(res, err, "geocodeCity");
-    }
-
-    /* ========= 2. ROUTE ========= */
-
-    let routeCoords, routeLine, distanceKm;
-    try {
-      const routeRes = await axios.get(
-        "https://maps.open-street.com/api/route/",
-        {
-          params: {
-            origin: `${start.lat},${start.lng}`,
-            destination: `${end.lat},${end.lng}`,
-            mode: "driving",
-            key: process.env.KEY_OPEN_STREET
-          },
-          timeout: 10000
-        }
-      );
-
-      routeCoords = decodePolyline(routeRes.data.polyline);
-      routeLine = turf.lineString(
-        routeCoords.map(([lat, lng]) => [lng, lat])
-      );
-      distanceKm = turf.length(routeLine, { units: "kilometers" });
-    } catch (err) {
-      return handleError(res, err, "routeCalculation");
-    }
-
-   /* ========= 3. BORNES ÉLECTRIQUES ========= */
-
-   let bornes = [];
-   try {
-     bornes = await findChargingStations({
-       routeLine,
-       distanceKm,
-       autonomieKm: Number(autonomieKm)
-     });
-   } catch (err) {
-     console.warn("findChargingStations a échoué :", err.message);
-     bornes = []; 
-   }
-   
-   /* ========= 4. TEMPS TRAJET (APPEL SOAP AVEC ARRETS) ========= */
-   
-   let travelTimeHours;
-   try {
-     travelTimeHours = await callTrajetSoap({
-       distanceKm,
-       vitesseMoyKmH: Number(vitesseMoyKmH),
-       autonomieKm: Number(autonomieKm),
-       tempsRechargeH: Number(tempsRechargeH),
-       nbRecharges: bornes.length // <-- ajouter le nombre d'arrêts
-     });
-   } catch (err) {
-     return handleError(res, err, "callTrajetSoap");
-   }
-
-
-    /* ========= REPONSE FORMAT JSON ========= */
-
-    res.json({
-      success: true,
-      startCity: startCity.trim(),
-      endCity: endCity.trim(),
-      start,
-      end,
-      distanceKm: Math.round(distanceKm),
-      travelTimeHours,
-      routeCoords,
-      bornes,
-      summary: {
-        distanceKm: Math.round(distanceKm),
-        tempsHeures: Number(travelTimeHours.toFixed(1)),
-        nbRecharges: bornes.length
-      }
-    });
-
-  } catch (err) {
-    return handleError(res, err, "mapController");
   }
+
+  return selected;
 }
