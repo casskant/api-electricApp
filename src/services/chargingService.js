@@ -3,22 +3,29 @@ import * as turf from "@turf/turf";
 
 const IRVE_URL = "https://odre.opendatasoft.com/api/records/1.0/search/";
 
-export async function findChargingStations({ routeLine, distanceKm, autonomieKm, bufferKm = 20 }) {
-  console.log("🚗 Recherche des bornes sur le trajet");
+/**
+ * Trouve les bornes électriques nécessaires pour un trajet
+ * @param {Object} routeLine - GeoJSON LineString du trajet ([lng, lat])
+ * @param {number} distanceKm - Distance totale du trajet (km)
+ * @param {number} autonomieKm - Autonomie du véhicule (km)
+ * @param {number} searchRadiusKm - Rayon autour du trajet pour chercher les bornes
+ */
+export async function findChargingStations({
+  routeLine,
+  distanceKm,
+  autonomieKm,
+  searchRadiusKm = 50
+}) {
+  console.log("🚗 Recherche des bornes sur le trajet...");
 
-  // 1️⃣ Créer un buffer autour de la route pour récupérer les bornes proches
-  const buffer = turf.buffer(routeLine, bufferKm, { units: "kilometers" });
-  const ring = buffer.geometry.coordinates[0];
-  const simplified = ring.slice(0, 50);
-  simplified.push(simplified[0]);
-  const polygonWKT = `POLYGON((${simplified.map(([lng, lat]) => `${lng} ${lat}`).join(",")}))`;
+  // 1️⃣ Prendre le point de départ pour récupérer toutes les bornes proches
+  const start = routeLine.coordinates[0]; // [lng, lat]
+  const radiusMeters = searchRadiusKm * 1000;
 
-  // 2️⃣ Requête API IRVE
   const res = await fetch(
-    `${IRVE_URL}?dataset=bornes-irve&geofilter=${encodeURIComponent(polygonWKT)}&rows=500`
+    `${IRVE_URL}?dataset=bornes-irve&geofilter.distance=${start[1]},${start[0]},${radiusMeters}&rows=500`
   );
   const data = await res.json();
-
   console.log(`🔹 ${data.records.length} bornes récupérées depuis l'API`);
 
   if (!data.records || data.records.length === 0) {
@@ -26,7 +33,7 @@ export async function findChargingStations({ routeLine, distanceKm, autonomieKm,
     return { nbStops: 0, stations: [] };
   }
 
-  // 3️⃣ Projeter toutes les bornes sur la route
+  // 2️⃣ Projeter toutes les bornes sur la route
   const withPosition = data.records
     .map((r, i) => {
       const p = r.fields?.geo_point_borne;
@@ -46,18 +53,21 @@ export async function findChargingStations({ routeLine, distanceKm, autonomieKm,
     .filter(b => b !== null)
     .sort((a, b) => a.distanceAlongRouteKm - b.distanceAlongRouteKm);
 
-  // 4️⃣ Sélection **simple et garantie** : on prend une borne tous les X km selon l’autonomie
+  console.log(`🔹 ${withPosition.length} bornes projetées sur la route`);
+
+  // 3️⃣ Sélection des arrêts en fonction de l'autonomie
   const selected = [];
   let lastStopKm = 0;
 
   for (const b of withPosition) {
-    if (b.distanceAlongRouteKm - lastStopKm >= autonomieKm || selected.length === 0) {
+    if (selected.length === 0 || b.distanceAlongRouteKm - lastStopKm >= autonomieKm) {
       selected.push({ ...b, rechargeNum: selected.length + 1 });
       lastStopKm = b.distanceAlongRouteKm;
     }
   }
 
-  console.log(`⚡ Bornes sélectionnées :`);
+  console.log(`⚡ Nombre d'arrêts nécessaires : ${selected.length}`);
+  console.log("🔹 Bornes sélectionnées :");
   selected.forEach(b =>
     console.log(`#${b.rechargeNum} - ${b.enseigne} (${b.puissance}kW) à ${b.distanceAlongRouteKm.toFixed(1)} km`)
   );
