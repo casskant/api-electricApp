@@ -71,6 +71,8 @@ export async function findChargingStations({
       lastStopKm = b.distanceAlongRouteKm;
     }
   }
-
+  console.log("buffer type:", buffer.geometry.type);
+  console.log("records reçus:", data.records?.length);
+  console.log("candidates après filtre:", candidates.length);
   return selected;
 }
